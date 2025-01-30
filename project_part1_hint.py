@@ -1,5 +1,6 @@
 import openai
 import project_part1_prompts as prompts
+import project_part1_repair as repair
 import project_part1_utils as utils
 
 import os
@@ -19,6 +20,7 @@ class Hint:
         self.system_prompt = prompts.system_message_nus
         self.user_prompt = prompts.user_message_nus_hint_basic
         self.is_huggingface = is_huggingface
+        self.user_prompt_with_repair = prompts.user_message_nus_hint_with_repair
 
         if self.is_huggingface:
             self.model, self.tokenizer = FastLanguageModel.from_pretrained(
@@ -127,7 +129,50 @@ class Hint:
         return generated_response
 
     # Generate a hint for the given problem and program
-    def generate_hint(self, problem_data, buggy_program, testcases):  
-        generated_response = self.call_llm(problem_data, buggy_program)
-        hint = self.extract_hint(generated_response)
+    # def generate_hint(self, problem_data, buggy_program, testcases):  
+        # generated_response = self.call_llm(problem_data, buggy_program)
+        # hint = self.extract_hint(generated_response)
+        # return hint
+
+    def generate_hint(self, problem_data, buggy_program, testcases):
+        repair_agent = repair.Repair(model_name=self.model_name, is_huggingface=self.is_huggingface)
+
+        # Step 1: Generate the best repair
+        best_repair = repair_agent.generate_repair(problem_data, buggy_program, testcases)
+        
+        if not best_repair:
+            print("[DEBUG] No valid repair found. Unable to generate hint.")
+            return None
+        
+        # Step 2: Generate hint with explanation using the best repair
+        user_prompt_formatted = self.user_prompt_with_repair.format(
+            problem_data=problem_data, 
+            buggy_program=buggy_program, 
+            repair=best_repair
+        )
+        
+        if self.is_huggingface:
+            generated_response = self.call_llm_huggingface(self.system_prompt, user_prompt_formatted)
+        else:
+            generated_response = self.call_llm_openai(self.system_prompt, user_prompt_formatted)
+        
+        # Extract explanation and hint
+        explanation = self.extract_text(generated_response, "[EXPLANATION]", "[/EXPLANATION]")
+        hint = self.extract_text(generated_response, "[HINT]", "[/HINT]")
+
+        # Debugging/Logging
+        print(f"[DEBUG] Explanation: {explanation}")
+        print(f"[DEBUG] Hint: {hint}")
+
         return hint
+
+    def extract_text(self, text, start_tag, end_tag):
+        start_index = text.find(start_tag)
+        if start_index == -1:
+            return ""
+        start_index += len(start_tag)
+        end_index = text.find(end_tag, start_index)
+        if end_index == -1:
+            end_index = len(text)
+        return text[start_index:end_index].strip()
+
