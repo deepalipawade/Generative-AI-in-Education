@@ -2,6 +2,8 @@ import openai
 import project_part1_prompts as prompts
 import project_part1_utils as utils
 import project_part1_evaluate as evaluate
+import project_part1_utils as utils
+
 
 
 import os
@@ -95,7 +97,7 @@ class Repair:
                 {"role": "system", "content": system_prompt_formatted},
                 {"role": "user", "content": user_prompt_formatted}
             ],
-            temperature=0
+            temperature=0.7
         )
 
         return response.choices[0].message.content
@@ -111,8 +113,8 @@ class Repair:
             max_new_tokens=2048, 
             use_cache=True,
             # You can use the parameters below to set the temperature for sampling. To learn more about these parameters, you can refer to https://huggingface.co/blog/how-to-generate.
-            # do_sample=True,
-            # temperature=0.7
+            do_sample=True,
+            temperature=0.7
         )
         
         response_text = self.tokenizer.decode(outputs[0][inputs.input_ids.shape[-1]:], skip_special_tokens=True)
@@ -139,7 +141,7 @@ class Repair:
         self.save_transcript_to_json(transcript)
         
         return generated_response
-
+    
     # Generate a repair for the given problem and program
     # def generate_repair(self, problem_data, buggy_program, testcases):        
     #     generated_response = self.call_llm(problem_data, buggy_program)
@@ -148,37 +150,60 @@ class Repair:
     #     return fixed_code
 
     def generate_repair(self, problem_data, buggy_program, testcases):
-        # Generate 3 repair candidates with temperature 0.7
+        # Generate 3 repair candidates
         candidates = []
-        for _ in range(3):
-            generated_response = self.call_llm(
-                problem_data=problem_data,
-                buggy_program=buggy_program
-            )
-            fixed_code = self.extract_fixed_code(generated_response)
-            candidates.append(fixed_code)
+        print("[DEBUG] Starting repair generation")
 
-        # Evaluate each candidate
+        for i in range(3):
+            print(f"[DEBUG] Generating candidate {i+1}")
+            generated_response = self.call_llm(problem_data, buggy_program)
+            fixed_code = self.extract_fixed_code(generated_response)
+            
+            if fixed_code is not None:  # Ensure only valid candidates are appended
+                candidates.append(fixed_code)
+            else:
+                print(f"[DEBUG] Candidate {i+1} is None and will not be added")
+
+        # If no valid candidates were generated, return None early
+        if not candidates:
+            print("[DEBUG] No valid candidates generated. Returning None.")
+            return None
+
+        print("[DEBUG] Evaluating candidates")
+
+        # Logic to select the best candidate based on minimum edit distance
         best_candidate = None
-        best_distance = float('inf')
+        best_distance = -1
+
+        # Initialize Compiler and Distance instances from utils
+        compiler = utils.Compiler()
+        distance_calculator = utils.Distance()
 
         for candidate in candidates:
-            # Use ProgramEvaluation's `get_and_evaluate_repair`
-            repair_results = evaluate.ProgramEvaluation(
-                repair_agent=self,
-                hint_agent=None,  # Not needed for repair
-                compiler=utils.Compiler(),
-                distance=utils.Distance()
-            ).get_and_evaluate_repair(
-                problem_data=problem_data,
-                buggy_program=candidate,
-                testcases=testcases
-            )
+            correct = True  # Assume the candidate is correct initially
 
-            if repair_results["correct"]:
-                if repair_results["distance"] < best_distance:
-                    best_candidate = repair_results["repair"]
-                    best_distance = repair_results["distance"]
+            for testcase in testcases:
+                testcase_input = testcase["input"]
+                code_to_check = candidate + f"\nresult = {testcase_input}\nprint(result)\n"
+                success, output = compiler.run_program(code_to_check)
+                testcase_correct = success and output.strip() == testcase['output'].strip()
+                correct = correct and testcase_correct
 
-        # Return the closest correct repair
+            if correct:
+                edit_distance = distance_calculator.get_edit_distance(candidate, buggy_program)
+                print(f"[DEBUG] Candidate passed all test cases with distance {edit_distance}")
+
+                # Update the best candidate if it's closer
+                if best_distance == -1 or edit_distance < best_distance:
+                    best_candidate = candidate
+                    best_distance = edit_distance
+            else:
+                print(f"[DEBUG] Candidate failed one or more test cases")
+
+        # If no correct candidate is found, return None
+        if best_candidate is None:
+            print("[DEBUG] No correct candidates passed all test cases so returning first candidate")
+            return candidates[0]
+
+        print("[DEBUG] Best candidate selected")
         return best_candidate
